@@ -3,10 +3,9 @@ name: Check Galaxy Tanta What's On
 on:
   workflow_dispatch:
   schedule:
-    # Egypt is UTC+3 (11:00 AM = 08:00 UTC, 8:00 PM = 17:00 UTC, 10:00 PM = 19:00 UTC)
+    # Egypt is UTC+3 (9:00 AM = 06:00 UTC, 6:00 PM = 15:00 UTC — 2hr buffer before 11am/8pm targets)
     # 3 = Wednesday, 4 = Thursday
-    - cron: "0 8,17 * * 3,4"
-    - cron: "0 19 * * 4"
+    - cron: "0 6,15 * * 3,4"
 
 permissions:
   contents: write

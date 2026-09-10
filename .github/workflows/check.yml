@@ -3,10 +3,10 @@ name: Check Galaxy Tanta What's On
 on:
   workflow_dispatch:
   schedule:
-    # GitHub cron is UTC. 07:00 and 17:00 UTC are 10:00 and 20:00
-    # in Egypt while Egypt is UTC+3.
-    - cron: "0 7 * * *"
-    - cron: "0 17 * * *"
+    # Egypt is UTC+3 (11:00 AM = 08:00 UTC, 8:00 PM = 17:00 UTC, 10:00 PM = 19:00 UTC)
+    # 3 = Wednesday, 4 = Thursday
+    - cron: "0 8,17 * * 3,4"
+    - cron: "0 19 * * 4"
 
 permissions:
   contents: write

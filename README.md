@@ -1,100 +1,39 @@
-# Galaxy Cinemas Tanta — What's On Monitor
+# Galaxy Tanta What's On Monitor
 
-Checks https://tanta.galaxy-cinema.com/ twice daily and sends a Telegram alert when a movie title appears in the **What's on** section that was not present in the previous check.
+Monitors the **What's on** movie list at Galaxy Cinemas Tanta and sends Telegram alerts when a new title appears.
 
-## Architecture
+## Automatic checks
 
-- GitHub Actions: runs the check twice per day.
-- Python + BeautifulSoup: fetches the Tanta homepage and extracts the `h3` movie titles under `What's on`.
-- `state.json`: stores the last successful snapshot.
-- Telegram Bot API: sends an alert only when new titles appear.
+The monitor is intended to check twice per day at **11:00 AM and 8:00 PM Egypt local time**. GitHub Actions schedules are UTC, so the workflow includes the relevant UTC hours around Egypt's daylight-saving transition and checks the actual `Africa/Cairo` local hour before running.
 
-The monitor deliberately watches the **What's on** section, not showtimes.
+## Manual check from Telegram
 
-## One-time setup
+Send this to the bot from the configured Telegram chat:
 
-### 1. Create a Telegram bot
+```text
+/check
+```
 
-On Telegram, open **@BotFather** and send:
+The Telegram command workflow polls every ~5 minutes. It replies immediately when it sees the command, then runs a live Galaxy check and sends the current What's On list plus any additions/removals.
 
-`/newbot`
+You can also send `/start` or `/help`.
 
-Follow the prompts. BotFather gives you a token that looks like:
+There is also a **Run workflow** button in GitHub Actions for an immediate manual check.
 
-`123456789:AA...`
+## GitHub secrets
 
-Keep it private.
+Create these repository Actions secrets:
 
-### 2. Start your bot
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
 
-Open the new bot's Telegram chat and send it:
+Keep the bot token private. If it is ever exposed, revoke it in BotFather and create a new token.
 
-`/start`
+## Files
 
-### 3. Get your Telegram chat ID
-
-Open this URL in a browser, replacing `BOT_TOKEN` with your token:
-
-`https://api.telegram.org/botBOT_TOKEN/getUpdates`
-
-Find:
-
-`"chat":{"id":123456789,...}`
-
-That number is your `TELEGRAM_CHAT_ID`.
-
-If `getUpdates` is empty, send `/start` to the bot again and refresh the URL.
-
-### 4. Create a GitHub repository
-
-Create a new GitHub repository, for example:
-
-`galaxy-tanta-monitor`
-
-Upload all files from this folder, including `.github/workflows/check.yml`.
-
-### 5. Add the two GitHub Actions secrets
-
-In your repo:
-
-**Settings → Secrets and variables → Actions → New repository secret**
-
-Add:
-
-- `TELEGRAM_BOT_TOKEN` = your BotFather token
-- `TELEGRAM_CHAT_ID` = your numeric chat ID
-
-Do not put the token in the source code.
-
-### 6. Test it immediately
-
-Go to:
-
-**Actions → Check Galaxy Tanta What's On → Run workflow**
-
-The first run creates the baseline. Because this starter configuration has `SEND_INITIAL_SNAPSHOT=true`, it also sends you the current list.
-
-After that, alerts are only sent when a title is newly detected.
-
-## Schedule
-
-The workflow runs at:
-
-- 07:00 UTC
-- 17:00 UTC
-
-That is 10:00 AM and 8:00 PM Egypt time while Egypt is UTC+3.
-
-GitHub Actions scheduled workflows can occasionally start a few minutes late.
-
-## What counts as "new"?
-
-A title is considered new if it exists in the current `What's on` section but was absent from the previous successful snapshot.
-
-A movie disappearing is recorded but does not trigger an alert by itself.
-
-## Important
-
-The site's content can change structure. If Galaxy changes the HTML around the `What's on` cards, `monitor.py` may need a small parser adjustment.
-
-The current parser is intentionally based on the actual page structure: the live page has a `What's on` heading followed by movie title headings. 
+- `monitor.py` — fetches and compares the movie list.
+- `telegram_commands.py` — handles `/check` and `/help` through Telegram polling.
+- `.github/workflows/check.yml` — twice-daily monitor + manual workflow.
+- `.github/workflows/telegram-command.yml` — Telegram command polling.
+- `state.json` — last known movie list (created on first successful check).
+- `telegram_state.json` — Telegram update offset (created after the command workflow runs).

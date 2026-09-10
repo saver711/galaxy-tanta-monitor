@@ -1,0 +1,46 @@
+name: Check Galaxy Tanta What's On
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub cron is UTC. 07:00 and 17:00 UTC are 10:00 and 20:00
+    # in Egypt while Egypt is UTC+3.
+    - cron: "0 7 * * *"
+    - cron: "0 17 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check Galaxy Tanta
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SEND_INITIAL_SNAPSHOT: "true"
+        run: python monitor.py
+
+      - name: Save state
+        run: |
+          if git diff --quiet -- state.json; then
+            echo "No state change."
+          else
+            git config user.name "galaxy-tanta-monitor"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "Update What's On snapshot"
+            git push
+          fi

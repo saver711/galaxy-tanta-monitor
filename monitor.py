@@ -1,29 +1,23 @@
 #!/usr/bin/env python3
 
-import html as html_lib
 import json
 import os
 import re
 import sys
+import urllib.parse
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
 SITE_URL = os.getenv("SITE_URL", "https://tanta.galaxy-cinema.com/")
-FB_POST_URL = os.getenv("FB_POST_URL", "https://www.facebook.com/share/p/1GaEPBkyp9")
+FB_POST_URL = os.getenv("FB_POST_URL", "https://www.facebook.com/share/p/1GaEPBkyp9/")
 STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
 TIMEOUT = int(os.getenv("TIMEOUT", "30"))
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; GalaxyTantaWhatsOnMonitor/2.0)"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
 }
-
-# 1. facebookexternalhit: Tricks FB into serving the link-preview HTML containing the text
-# 2. Normal browser: Fallback to parse the embedded JSON payload
-FB_USER_AGENTS = [
-    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-]
 
 STOP_HEADINGS = {
     "our partners",
@@ -82,40 +76,32 @@ def fetch_whats_on():
     return titles
 
 # --------------------------------------------------------------------------
-# Facebook post (Mansoura branches)
+# Facebook post (Mansoura branches) via Embed API (No Cookies Needed)
 # --------------------------------------------------------------------------
 def fetch_facebook_text():
     """
-    Attempts to fetch raw text from Facebook using multiple fallbacks.
+    Fetches the Facebook post using the public Embed plugin URL.
+    This bypasses the main site's aggressive login walls and requires no cookies.
     """
-    for ua in FB_USER_AGENTS:
-        try:
-            headers = {"User-Agent": ua, "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"}
-            r = requests.get(FB_POST_URL, headers=headers, timeout=TIMEOUT)
-            r.raise_for_status()
-            html_content = r.text
-
-            # Method 1: Look for OpenGraph description tag
-            soup = BeautifulSoup(html_content, "html.parser")
-            meta_desc = soup.find("meta", property="og:description")
-            if meta_desc and meta_desc.get("content"):
-                text = html_lib.unescape(meta_desc["content"])
-                if "📍" in text or "🎞" in text:
-                    return text
-
-            # Method 2: Regex extract the JSON embedded message payload
-            match = re.search(r'"message":\s*\{\s*"text":\s*"((?:[^"\\]|\\.)*?📍(?:[^"\\]|\\.)*?)"\s*\}', html_content)
-            if match:
-                raw_text = match.group(1)
-                # Parse the JSON string to safely handle unicode and \n escapes
-                parsed_text = json.loads(f'"{raw_text}"')
-                return parsed_text
-                
-        except Exception as e:
-            print(f"Failed extracting FB with UA {ua}: {e}", file=sys.stderr)
-            continue
-            
-    raise RuntimeError("Could not extract post content from Facebook HTML due to anti-bot protection.")
+    # URL encode the target Facebook post
+    encoded_url = urllib.parse.quote(FB_POST_URL, safe='')
+    
+    # Construct the embed URL (show_text=true forces the post content to load)
+    embed_url = f"https://www.facebook.com/plugins/post.php?href={encoded_url}&show_text=true"
+    
+    r = requests.get(embed_url, headers=HEADERS, timeout=TIMEOUT)
+    r.raise_for_status()
+    
+    soup = BeautifulSoup(r.text, "html.parser")
+    
+    # Extract all visible text from the embed page, separated by newlines
+    text = soup.get_text(separator="\n")
+    
+    # Verify we got actual post content by checking for our expected emojis
+    if "📍" in text or "🎞" in text:
+        return text
+        
+    raise RuntimeError("Successfully loaded embed, but could not find movie emojis in the text. Facebook might have altered the layout.")
 
 def parse_facebook_text(text):
     results = {b[0]: [] for b in BRANCHES}
@@ -167,6 +153,7 @@ def generate_telegram_message(tanta_movies, fb_results, fb_note, fb_error):
     # 2. Facebook Output (Mansoura)
     if fb_error:
         msg.append(f"⚠️ Couldn't read the Mansoura Facebook post this time.\n")
+        msg.append(f"Reason: {fb_error}\n")
         msg.append(f"{FB_POST_URL}")
     else:
         for branch_name, _ in BRANCHES:
@@ -176,7 +163,7 @@ def generate_telegram_message(tanta_movies, fb_results, fb_note, fb_error):
                 for m in movies:
                     msg.append(f"• {m}")
             else:
-                msg.append("No movies listed or failed to parse.")
+                msg.append("List here")
             msg.append("") # Empty line between branches
             
         msg.append(f"{FB_POST_URL}")

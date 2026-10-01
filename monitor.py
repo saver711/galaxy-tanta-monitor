@@ -79,18 +79,16 @@ def fetch_whats_on():
     return titles
 
 # --------------------------------------------------------------------------
-# Mansoura branches via elCinema (The Optimal Solution)
+# Mansoura branches via elCinema
 # --------------------------------------------------------------------------
 def fetch_mansoura_movies():
     """
     Scrapes the official elCinema.com pages for the Mansoura Galaxy branches.
-    This bypasses Facebook completely and natively grabs English movie titles.
     """
     results = {}
     error = None
     
     for branch_name, theater_id in ELCINEMA_BRANCHES:
-        # Using /en/ forces elCinema to load the English titles 
         url = f"https://elcinema.com/en/theater/{theater_id}/"
         try:
             r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
@@ -98,12 +96,15 @@ def fetch_mansoura_movies():
             soup = BeautifulSoup(r.text, "html.parser")
             
             movies = []
-            # elCinema links movies using the /work/ID/ pattern
             for a in soup.find_all("a", href=True):
-                if re.search(r'/work/\d+', a['href']):
+                # Strictly match only the root work page to avoid picking up /video/ or /cast/ buttons
+                if re.search(r'^(/en)?/work/\d+/?$', a['href']):
                     title = normalize(a.get_text(" ", strip=True))
-                    # Skip empty titles (images) or interface buttons
-                    if title and title not in movies and not any(skip in title.lower() for skip in ['read more', 'cast', 'crew', 'photos', 'more']):
+                    
+                    # Ignore UI buttons that accidentally share the root href or are empty
+                    skip_words = ['read more', 'cast', 'crew', 'photos', 'more', 'trailer', 'tickets', 'buy']
+                    
+                    if title and title not in movies and not any(skip in title.lower() for skip in skip_words):
                         movies.append(title)
                         
             results[branch_name] = movies
@@ -142,11 +143,9 @@ def generate_telegram_message(tanta_movies, mansoura_results, mansoura_error):
                     msg.append(f"• {m}")
             else:
                 msg.append("List here")
-            msg.append("") # Empty line between branches
+            msg.append("") 
             
         msg.append(FB_LINK_FOR_MESSAGE)
-        
-        # Hardcoding the Friday note to maintain your exact requested format
         msg.append("والجمعة المواعيد تبدأ من الساعة 2:00 ظهرًا✨")
             
     return "\n".join(msg)
@@ -199,7 +198,7 @@ def main():
                     print("No changes detected in movies. Exiting.", file=sys.stderr)
                     sys.exit(0)
         except Exception:
-            pass # Proceed if state file is corrupt
+            pass 
 
     # 4. Generate and send Message
     message = generate_telegram_message(tanta_movies, mansoura_results, mansoura_error)

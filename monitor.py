@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import html as html_lib
 import json
 import os
 import re
@@ -27,7 +28,6 @@ STOP_HEADINGS = {
     "follow us",
 }
 
-# Branch label shown in Telegram -> keywords found in the 📍 line of the post.
 BRANCHES = [
     ("Mansoura M4aya", ("الجزيرة", "جزيرة", "المشاية")),
     ("Mansoura university mall", ("الجامعة", "الأولمبية", "الاولمبية")),
@@ -76,32 +76,73 @@ def fetch_whats_on():
     return titles
 
 # --------------------------------------------------------------------------
-# Facebook post (Mansoura branches) via Embed API (No Cookies Needed)
+# Facebook Utilities & Scraping
 # --------------------------------------------------------------------------
+def resolve_fb_share_url(url):
+    """
+    Follows Facebook's /share/p/ shortlinks to find the true Canonical URL.
+    If it redirects to a login page, it extracts the real URL from the 'next' parameter.
+    """
+    try:
+        r = requests.get(url, headers=HEADERS, allow_redirects=True, timeout=TIMEOUT)
+        final_url = r.url
+        
+        # If Facebook pushed us to a login page, the target URL is trapped in the query string
+        if "login" in final_url and "next=" in final_url:
+            parsed = urllib.parse.urlparse(final_url)
+            qs = urllib.parse.parse_qs(parsed.query)
+            if "next" in qs:
+                real_url = qs["next"][0]
+                return real_url.split('?')[0] # Strip trailing tracking params
+                
+        return final_url.split('?')[0]
+    except Exception as e:
+        print(f"Error resolving URL: {e}", file=sys.stderr)
+        return url
+
 def fetch_facebook_text():
     """
-    Fetches the Facebook post using the public Embed plugin URL.
-    This bypasses the main site's aggressive login walls and requires no cookies.
+    Fetches the Facebook post using multiple cookie-less strategies.
     """
-    # URL encode the target Facebook post
-    encoded_url = urllib.parse.quote(FB_POST_URL, safe='')
+    # 1. Resolve the short-link to a canonical post URL to prevent 400 Bad Request
+    canonical_url = resolve_fb_share_url(FB_POST_URL)
     
-    # Construct the embed URL (show_text=true forces the post content to load)
-    embed_url = f"https://www.facebook.com/plugins/post.php?href={encoded_url}&show_text=true"
-    
-    r = requests.get(embed_url, headers=HEADERS, timeout=TIMEOUT)
-    r.raise_for_status()
-    
-    soup = BeautifulSoup(r.text, "html.parser")
-    
-    # Extract all visible text from the embed page, separated by newlines
-    text = soup.get_text(separator="\n")
-    
-    # Verify we got actual post content by checking for our expected emojis
-    if "📍" in text or "🎞" in text:
-        return text
+    # Strategy A: The Embed Plugin
+    try:
+        encoded_url = urllib.parse.quote(canonical_url, safe='')
+        embed_url = f"https://www.facebook.com/plugins/post.php?href={encoded_url}&show_text=true"
         
-    raise RuntimeError("Successfully loaded embed, but could not find movie emojis in the text. Facebook might have altered the layout.")
+        r = requests.get(embed_url, headers=HEADERS, timeout=TIMEOUT)
+        r.raise_for_status()
+        
+        soup = BeautifulSoup(r.text, "html.parser")
+        text = soup.get_text(separator="\n")
+        
+        if "📍" in text or "🎞" in text:
+            return text
+    except Exception as e:
+        print(f"Embed Strategy failed: {e}", file=sys.stderr)
+
+    # Strategy B: Googlebot OpenGraph Fallback
+    try:
+        googlebot_headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+            "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
+        }
+        r = requests.get(canonical_url, headers=googlebot_headers, timeout=TIMEOUT)
+        r.raise_for_status()
+        
+        soup = BeautifulSoup(r.text, "html.parser")
+        meta_desc = soup.find("meta", property="og:description")
+        
+        if meta_desc and meta_desc.get("content"):
+            text = html_lib.unescape(meta_desc["content"])
+            if "📍" in text or "🎞" in text:
+                return text
+    except Exception as e:
+        print(f"Googlebot Strategy failed: {e}", file=sys.stderr)
+
+    raise RuntimeError(f"All extraction strategies failed for URL: {canonical_url}")
 
 def parse_facebook_text(text):
     results = {b[0]: [] for b in BRANCHES}
@@ -124,12 +165,11 @@ def parse_facebook_text(text):
             
         # Extract movie name if inside a valid branch section
         if "🎞" in line and current_branch:
-            # Remove emojis and clean up whitespace
             movie = re.sub(r'🎞️?', '', line).strip()
             if movie and movie not in results[current_branch]:
                 results[current_branch].append(movie)
                 
-        # Attempt to capture the dynamic Friday note
+        # Capture the dynamic Friday note
         if "الجمعة" in line or "والجمعة" in line:
             friday_note = line
 
@@ -168,7 +208,6 @@ def generate_telegram_message(tanta_movies, fb_results, fb_note, fb_error):
             
         msg.append(f"{FB_POST_URL}")
         
-        # Friday Note injection
         if fb_note:
             msg.append(fb_note)
         else:

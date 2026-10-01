@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 
-import html as html_lib
 import json
 import os
 import re
 import sys
-import urllib.parse
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
 SITE_URL = os.getenv("SITE_URL", "https://tanta.galaxy-cinema.com/")
-FB_POST_URL = os.getenv("FB_POST_URL", "https://www.facebook.com/share/p/1GaEPBkyp9/")
 STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
 TIMEOUT = int(os.getenv("TIMEOUT", "30"))
 
@@ -28,10 +25,16 @@ STOP_HEADINGS = {
     "follow us",
 }
 
-BRANCHES = [
-    ("Mansoura M4aya", ("الجزيرة", "جزيرة", "المشاية")),
-    ("Mansoura university mall", ("الجامعة", "الأولمبية", "الاولمبية")),
+# elCinema Theater IDs for the Mansoura branches
+# 3101077 = Galaxy Elgezeera Plaza Cinema (Mansoura M4aya)
+# 3101269 = Galaxy Mall of University Cinema
+ELCINEMA_BRANCHES = [
+    ("Mansoura M4aya", "3101077"),
+    ("Mansoura university mall", "3101269"),
 ]
+
+# We keep the Facebook URL just to append it to the bottom of the Telegram message
+FB_LINK_FOR_MESSAGE = "https://www.facebook.com/share/p/1GaEPBkyp9/"
 
 def normalize(s: str) -> str:
     s = re.sub(r"\s+", " ", s or "").strip()
@@ -76,109 +79,44 @@ def fetch_whats_on():
     return titles
 
 # --------------------------------------------------------------------------
-# Facebook Utilities & Scraping
+# Mansoura branches via elCinema (The Optimal Solution)
 # --------------------------------------------------------------------------
-def resolve_fb_share_url(url):
+def fetch_mansoura_movies():
     """
-    Follows Facebook's /share/p/ shortlinks to find the true Canonical URL.
-    If it redirects to a login page, it extracts the real URL from the 'next' parameter.
+    Scrapes the official elCinema.com pages for the Mansoura Galaxy branches.
+    This bypasses Facebook completely and natively grabs English movie titles.
     """
-    try:
-        r = requests.get(url, headers=HEADERS, allow_redirects=True, timeout=TIMEOUT)
-        final_url = r.url
-        
-        # If Facebook pushed us to a login page, the target URL is trapped in the query string
-        if "login" in final_url and "next=" in final_url:
-            parsed = urllib.parse.urlparse(final_url)
-            qs = urllib.parse.parse_qs(parsed.query)
-            if "next" in qs:
-                real_url = qs["next"][0]
-                return real_url.split('?')[0] # Strip trailing tracking params
-                
-        return final_url.split('?')[0]
-    except Exception as e:
-        print(f"Error resolving URL: {e}", file=sys.stderr)
-        return url
-
-def fetch_facebook_text():
-    """
-    Fetches the Facebook post using multiple cookie-less strategies.
-    """
-    # 1. Resolve the short-link to a canonical post URL to prevent 400 Bad Request
-    canonical_url = resolve_fb_share_url(FB_POST_URL)
+    results = {}
+    error = None
     
-    # Strategy A: The Embed Plugin
-    try:
-        encoded_url = urllib.parse.quote(canonical_url, safe='')
-        embed_url = f"https://www.facebook.com/plugins/post.php?href={encoded_url}&show_text=true"
-        
-        r = requests.get(embed_url, headers=HEADERS, timeout=TIMEOUT)
-        r.raise_for_status()
-        
-        soup = BeautifulSoup(r.text, "html.parser")
-        text = soup.get_text(separator="\n")
-        
-        if "📍" in text or "🎞" in text:
-            return text
-    except Exception as e:
-        print(f"Embed Strategy failed: {e}", file=sys.stderr)
-
-    # Strategy B: Googlebot OpenGraph Fallback
-    try:
-        googlebot_headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-            "Accept-Language": "en-US,en;q=0.9,ar;q=0.8"
-        }
-        r = requests.get(canonical_url, headers=googlebot_headers, timeout=TIMEOUT)
-        r.raise_for_status()
-        
-        soup = BeautifulSoup(r.text, "html.parser")
-        meta_desc = soup.find("meta", property="og:description")
-        
-        if meta_desc and meta_desc.get("content"):
-            text = html_lib.unescape(meta_desc["content"])
-            if "📍" in text or "🎞" in text:
-                return text
-    except Exception as e:
-        print(f"Googlebot Strategy failed: {e}", file=sys.stderr)
-
-    raise RuntimeError(f"All extraction strategies failed for URL: {canonical_url}")
-
-def parse_facebook_text(text):
-    results = {b[0]: [] for b in BRANCHES}
-    current_branch = None
-    friday_note = ""
-    
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    for branch_name, theater_id in ELCINEMA_BRANCHES:
+        # Using /en/ forces elCinema to load the English titles 
+        url = f"https://elcinema.com/en/theater/{theater_id}/"
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "html.parser")
             
-        # Check for branch location header
-        if "📍" in line:
-            current_branch = None
-            for branch_name, keywords in BRANCHES:
-                if any(kw in line for kw in keywords):
-                    current_branch = branch_name
-                    break
-            continue
+            movies = []
+            # elCinema links movies using the /work/ID/ pattern
+            for a in soup.find_all("a", href=True):
+                if re.search(r'/work/\d+', a['href']):
+                    title = normalize(a.get_text(" ", strip=True))
+                    # Skip empty titles (images) or interface buttons
+                    if title and title not in movies and not any(skip in title.lower() for skip in ['read more', 'cast', 'crew', 'photos', 'more']):
+                        movies.append(title)
+                        
+            results[branch_name] = movies
+        except Exception as e:
+            print(f"Failed to fetch {branch_name} from elCinema: {e}", file=sys.stderr)
+            error = f"Failed fetching {branch_name}"
             
-        # Extract movie name if inside a valid branch section
-        if "🎞" in line and current_branch:
-            movie = re.sub(r'🎞️?', '', line).strip()
-            if movie and movie not in results[current_branch]:
-                results[current_branch].append(movie)
-                
-        # Capture the dynamic Friday note
-        if "الجمعة" in line or "والجمعة" in line:
-            friday_note = line
-
-    return results, friday_note
+    return results, error
 
 # --------------------------------------------------------------------------
 # Message Generation & State Management
 # --------------------------------------------------------------------------
-def generate_telegram_message(tanta_movies, fb_results, fb_note, fb_error):
+def generate_telegram_message(tanta_movies, mansoura_results, mansoura_error):
     msg = ["🎬 Galaxy monitor is live.\n"]
     
     # 1. Tanta Output
@@ -190,15 +128,15 @@ def generate_telegram_message(tanta_movies, fb_results, fb_note, fb_error):
         msg.append("No movies listed.")
     msg.append(f"\n{SITE_URL}\n")
     
-    # 2. Facebook Output (Mansoura)
-    if fb_error:
-        msg.append(f"⚠️ Couldn't read the Mansoura Facebook post this time.\n")
-        msg.append(f"Reason: {fb_error}\n")
-        msg.append(f"{FB_POST_URL}")
+    # 2. Mansoura Output
+    if mansoura_error and not any(mansoura_results.values()):
+        msg.append(f"⚠️ Couldn't fetch Mansoura movies this time.\n")
+        msg.append(f"Reason: {mansoura_error}\n")
+        msg.append(FB_LINK_FOR_MESSAGE)
     else:
-        for branch_name, _ in BRANCHES:
+        for branch_name, _ in ELCINEMA_BRANCHES:
             msg.append(f"{branch_name}:")
-            movies = fb_results.get(branch_name, [])
+            movies = mansoura_results.get(branch_name, [])
             if movies:
                 for m in movies:
                     msg.append(f"• {m}")
@@ -206,12 +144,10 @@ def generate_telegram_message(tanta_movies, fb_results, fb_note, fb_error):
                 msg.append("List here")
             msg.append("") # Empty line between branches
             
-        msg.append(f"{FB_POST_URL}")
+        msg.append(FB_LINK_FOR_MESSAGE)
         
-        if fb_note:
-            msg.append(fb_note)
-        else:
-            msg.append("والجمعة المواعيد تبدأ من الساعة 2:00 ظهرًا✨")
+        # Hardcoding the Friday note to maintain your exact requested format
+        msg.append("والجمعة المواعيد تبدأ من الساعة 2:00 ظهرًا✨")
             
     return "\n".join(msg)
 
@@ -241,20 +177,18 @@ def main():
     except Exception as e:
         print(f"Error fetching Tanta: {e}", file=sys.stderr)
 
-    # 2. Fetch Facebook Data
-    fb_results = {b[0]: [] for b in BRANCHES}
-    fb_note = ""
-    fb_error = None
+    # 2. Fetch Mansoura Data
+    mansoura_results = {b[0]: [] for b in ELCINEMA_BRANCHES}
+    mansoura_error = None
     try:
-        fb_text = fetch_facebook_text()
-        fb_results, fb_note = parse_facebook_text(fb_text)
+        mansoura_results, mansoura_error = fetch_mansoura_movies()
     except Exception as e:
-        fb_error = str(e)
+        mansoura_error = str(e)
 
     # 3. Check State for Updates
     current_state = {
         "tanta": tanta_movies,
-        "fb_results": fb_results
+        "mansoura_results": mansoura_results
     }
     
     if STATE_FILE.exists():
@@ -268,7 +202,7 @@ def main():
             pass # Proceed if state file is corrupt
 
     # 4. Generate and send Message
-    message = generate_telegram_message(tanta_movies, fb_results, fb_note, fb_error)
+    message = generate_telegram_message(tanta_movies, mansoura_results, mansoura_error)
     send_telegram(message)
     
     # 5. Save new state
